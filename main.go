@@ -5,48 +5,47 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"log"
 	"net/http"
-	"runtime"
 )
 
 type collector struct {
 	goroutinesDesc *prometheus.Desc
-	threadsDesc    *prometheus.Desc
+	target         string
 }
 
-func newCollector() *collector {
+func newCollector(target string) *collector {
 	return &collector{
 		goroutinesDesc: prometheus.NewDesc(
-			"google_status",
-			"Number of goroutines that currently exist.",
+			"http_status",
+			"http status",
 			nil, nil),
-		threadsDesc: prometheus.NewDesc(
-			"threads",
-			"Number of OS threads created.",
-			nil, nil),
+		target: target,
 	}
 }
 
 func (c *collector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.goroutinesDesc
-	ch <- c.threadsDesc
 }
 
 func (c *collector) Collect(ch chan<- prometheus.Metric) {
+	resp, err := http.Get(c.target)
+	if err != nil {
+		ch <- prometheus.MustNewConstMetric(c.goroutinesDesc, prometheus.GaugeValue, 0)
+	} else {
+		ch <- prometheus.MustNewConstMetric(c.goroutinesDesc, prometheus.GaugeValue, float64(resp.StatusCode))
+	}
+}
 
-	resp, _ := http.Get("https://google.com")
-
-	log.Println("scrape")
-
-	ch <- prometheus.MustNewConstMetric(c.goroutinesDesc, prometheus.GaugeValue, float64(resp.StatusCode))
-	n, _ := runtime.ThreadCreateProfile(nil)
-	ch <- prometheus.MustNewConstMetric(c.threadsDesc, prometheus.GaugeValue, float64(n))
+func probeHandler(w http.ResponseWriter, r *http.Request) {
+	target := r.URL.Query().Get("target")
+	reg := prometheus.NewRegistry()
+	reg.MustRegister(newCollector(target))
+	h := promhttp.HandlerFor(reg, promhttp.HandlerOpts{})
+	h.ServeHTTP(w, r)
 }
 
 func main() {
-	reg := prometheus.NewRegistry()
-	reg.MustRegister(newCollector())
-
-	http.Handle("/metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	http.Handle("/metrics", promhttp.Handler())
+	http.HandleFunc("/probe", probeHandler)
 	if err := http.ListenAndServe(":19115", nil); err != nil {
 		log.Fatal(err)
 	}
